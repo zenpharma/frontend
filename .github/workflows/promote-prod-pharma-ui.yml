@@ -1,0 +1,120 @@
+name: Promote pharma-ui to PROD
+
+# Triggered manually — picks up the image currently running in QA and opens
+# a PR in the GitOps repo to promote it to PROD.
+# PROD ArgoCD app requires manual sync after merge.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+
+jobs:
+
+  promote:
+    name: Open PROD Promotion PR
+    runs-on: ubuntu-latest
+    environment: prod
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: _gitops
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Validate QA values file exists
+        run: |
+          QA_VALUES="_gitops/envs/qa/values-pharma-ui.yaml"
+          if [[ ! -f "$QA_VALUES" ]]; then
+            echo "::error::QA values file not found: ${QA_VALUES}"
+            echo "::error::Cannot determine which image is running in QA."
+            exit 1
+          fi
+          echo "QA_VALUES=${QA_VALUES}" >> "$GITHUB_ENV"
+
+      - name: Read image tag from QA
+        run: |
+          IMAGE_TAG=$(yq e '.image.tag' "$QA_VALUES")
+          if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "null" ]]; then
+            echo "::error::Could not read .image.tag from $QA_VALUES"
+            exit 1
+          fi
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "Promoting image: ${IMAGE_TAG}"
+
+      - name: Validate PROD values file exists
+        run: |
+          PROD_VALUES="_gitops/envs/prod/values-pharma-ui.yaml"
+          if [[ ! -f "$PROD_VALUES" ]]; then
+            echo "::error::PROD values file not found: ${PROD_VALUES}"
+            exit 1
+          fi
+          echo "PROD_VALUES=envs/prod/values-pharma-ui.yaml" >> "$GITHUB_ENV"
+
+      - name: Create branch, patch values, open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          GITOPS_REPO_NAME: ${{ env.GITOPS_REPO }}
+        run: |
+          BRANCH="promote/prod/pharma-ui/${IMAGE_TAG}"
+
+          cd _gitops
+          git checkout -b "$BRANCH"
+          yq e ".image.tag = \"${IMAGE_TAG}\"" -i "${PROD_VALUES}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --staged --quiet; then
+            echo "::notice::PROD already has image ${IMAGE_TAG} — no PR needed."
+            exit 0
+          fi
+          git commit -m "promote(prod): pharma-ui → ${IMAGE_TAG}"
+          git push origin "$BRANCH"
+
+          printf '%s\n' \
+            "## PROD Promotion" \
+            "" \
+            "Service : pharma-ui" \
+            "Image   : ${IMAGE_TAG}" \
+            "Promoted from QA by : ${ACTOR}" \
+            "Workflow run : ${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}" \
+            "" \
+            "## Pre-merge Checklist" \
+            "- [ ] QA sign-off received" \
+            "- [ ] Change ticket / CAB approved" \
+            "- [ ] No unexpected config changes in this diff" \
+            "- [ ] Runbook link added to change ticket" \
+            "" \
+            "## Post-merge" \
+            "ArgoCD app \`pharma-prod/pharma-ui\` is configured for **manual sync**." \
+            "After merging, trigger sync in ArgoCD and monitor the rollout." \
+            "" \
+            "Merging this PR updates ${PROD_VALUES}." > /tmp/pr-body.md
+
+          gh pr create \
+            --repo "$GITOPS_REPO_NAME" \
+            --title "promote(prod): pharma-ui → ${IMAGE_TAG}" \
+            --body-file /tmp/pr-body.md \
+            --base main \
+            --head "$BRANCH"
+
+          echo "::notice title=PROD PR opened::Review, get approvals, and merge in ${GITOPS_REPO_NAME}. Then manually sync ArgoCD pharma-prod/pharma-ui."

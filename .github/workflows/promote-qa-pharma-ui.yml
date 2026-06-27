@@ -1,0 +1,115 @@
+name: Promote pharma-ui to QA
+
+# Triggered manually — picks up the image currently running in DEV and opens
+# a PR in the GitOps repo to promote it to QA.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+
+jobs:
+
+  promote:
+    name: Open QA Promotion PR
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: _gitops
+
+      - name: Install yq
+        run: |
+          wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Validate DEV values file exists
+        run: |
+          DEV_VALUES="_gitops/envs/dev/values-pharma-ui.yaml"
+          if [[ ! -f "$DEV_VALUES" ]]; then
+            echo "::error::DEV values file not found: ${DEV_VALUES}"
+            echo "::error::Cannot determine which image is running in DEV."
+            exit 1
+          fi
+          echo "DEV_VALUES=${DEV_VALUES}" >> "$GITHUB_ENV"
+
+      - name: Read image tag from DEV
+        run: |
+          IMAGE_TAG=$(yq e '.image.tag' "$DEV_VALUES")
+          if [[ -z "$IMAGE_TAG" || "$IMAGE_TAG" == "null" ]]; then
+            echo "::error::Could not read .image.tag from $DEV_VALUES"
+            exit 1
+          fi
+          echo "IMAGE_TAG=${IMAGE_TAG}" >> "$GITHUB_ENV"
+          echo "Promoting image: ${IMAGE_TAG}"
+
+      - name: Create branch, commit, open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          GITOPS_REPO_NAME: ${{ env.GITOPS_REPO }}
+        run: |
+          VALUES="_gitops/envs/qa/values-pharma-ui.yaml"
+          BRANCH="promote/qa/pharma-ui/${IMAGE_TAG}"
+
+          if [[ ! -f "$VALUES" ]]; then
+            echo "::warning::$VALUES not found — QA PR skipped."
+            exit 0
+          fi
+
+          cd _gitops
+          git checkout -b "$BRANCH"
+          yq e ".image.tag = \"${IMAGE_TAG}\"" -i "envs/qa/values-pharma-ui.yaml"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          if git diff --staged --quiet; then
+            echo "QA already has this image — no PR needed"
+            exit 0
+          fi
+          git commit -m "promote(qa): pharma-ui → ${IMAGE_TAG}"
+          git push --force-with-lease origin "$BRANCH"
+
+          printf '%s\n' \
+            "## QA Promotion" \
+            "" \
+            "Service : pharma-ui" \
+            "Image   : ${IMAGE_TAG}" \
+            "Promoted by : ${ACTOR}" \
+            "Build   : ${SERVER_URL}/${REPOSITORY}/actions/runs/${RUN_ID}" \
+            "" \
+            "## Checklist" \
+            "- [ ] DEV smoke test passed" \
+            "- [ ] No unexpected config changes in this diff" \
+            "- [ ] QA team sign-off" \
+            "" \
+            "Merging this PR updates envs/qa/values-pharma-ui.yaml." \
+            "ArgoCD (pharma-qa) auto-syncs on merge." > /tmp/pr-body.md
+
+          PR_URL=$(gh pr view --repo "$GITOPS_REPO_NAME" --head "$BRANCH" --json url -q .url 2>/dev/null || true)
+          if [[ -n "$PR_URL" ]]; then
+            echo "::notice title=QA PR already open::${PR_URL}"
+          else
+            gh pr create \
+              --repo "$GITOPS_REPO_NAME" \
+              --title "promote(qa): pharma-ui → ${IMAGE_TAG}" \
+              --body-file /tmp/pr-body.md \
+              --base main \
+              --head "$BRANCH"
+            echo "::notice title=QA PR opened::Review and merge in ${GITOPS_REPO_NAME} to deploy to QA."
+          fi
