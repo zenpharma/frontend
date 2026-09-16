@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+  GITOPS_REPO: Ngocvinh00509/zenpharma-gitops
 
 jobs:
 
@@ -28,6 +28,20 @@ jobs:
           repository: ${{ env.GITOPS_REPO }}
           token: ${{ secrets.GITOPS_TOKEN }}
           path: _gitops
+
+      - name: Verify GitOps token can push
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO_NAME: ${{ env.GITOPS_REPO }}
+        run: |
+          [[ -n "$GH_TOKEN" ]] || {
+            echo "::error::GITOPS_TOKEN is not configured for this repository or environment."
+            exit 1
+          }
+          [[ "$(gh api "repos/${GITOPS_REPO_NAME}" --jq '.permissions.push')" == "true" ]] || {
+            echo "::error::GITOPS_TOKEN cannot push to ${GITOPS_REPO_NAME}. Grant it Contents: Read and write access."
+            exit 1
+          }
 
       - name: Install yq
         run: |

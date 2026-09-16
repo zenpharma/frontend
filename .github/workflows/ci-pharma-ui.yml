@@ -23,9 +23,9 @@ permissions:
   pull-requests: read
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: ap-southeast-1
   ECR_REPOSITORY: pharma-ui
-  GITOPS_REPO: ${{ vars.GITOPS_REPO }}
+  GITOPS_REPO: Ngocvinh00509/zenpharma-gitops
 
 jobs:
   # ── 1. Lint ───────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ jobs:
         with:
           args: >
             -Dsonar.organization=${{ vars.SONAR_ORG }}
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY_FRONTEND }}
+            -Dsonar.projectKey=zenpharma-frontend
             -Dsonar.sources=src
             -Dsonar.tests=src
             -Dsonar.test.inclusions=**/*.test.js,**/*.test.jsx
@@ -150,8 +150,45 @@ jobs:
         id: tag
         run: echo "image_tag=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
+      # TEMPORARY DEBUG - remove after fixing OIDC
+      - name: Diagnose GitHub OIDC claims
+        shell: bash
+        run: |
+          node <<'NODE'
+          (async () => {
+            const response = await fetch(
+              `${process.env.ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com`,
+              {
+                headers: {
+                  Authorization: `Bearer ${process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN}`
+                }
+              }
+            );
+
+            const { value: token } = await response.json();
+
+            const claims = JSON.parse(
+              Buffer.from(token.split('.')[1], 'base64url').toString()
+            );
+
+            console.log(JSON.stringify({
+              iss: claims.iss,
+              aud: claims.aud,
+              sub: claims.sub,
+              repository: claims.repository,
+              repository_id: claims.repository_id,
+              repository_owner: claims.repository_owner,
+              repository_owner_id: claims.repository_owner_id,
+              ref: claims.ref,
+              environment: claims.environment,
+              event_name: claims.event_name,
+              workflow_ref: claims.workflow_ref
+            }, null, 2));
+          })();
+          NODE
+
       - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v5
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/pharma-dev-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
@@ -195,6 +232,20 @@ jobs:
           repository: ${{ env.GITOPS_REPO }}
           token: ${{ secrets.GITOPS_TOKEN }}
           path: _gitops
+
+      - name: Verify GitOps token can push
+        env:
+          GH_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+          GITOPS_REPO_NAME: ${{ env.GITOPS_REPO }}
+        run: |
+          [[ -n "$GH_TOKEN" ]] || {
+            echo "::error::GITOPS_TOKEN is not configured for this repository or environment."
+            exit 1
+          }
+          [[ "$(gh api "repos/${GITOPS_REPO_NAME}" --jq '.permissions.push')" == "true" ]] || {
+            echo "::error::GITOPS_TOKEN cannot push to ${GITOPS_REPO_NAME}. Grant it Contents: Read and write access."
+            exit 1
+          }
 
       - name: Install yq
         run: |
