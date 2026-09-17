@@ -8,7 +8,7 @@ COPY src ./src
 COPY .env.production ./
 RUN npm run build
 
-# Stage 2: Serve with Nginx
+# Stage 2: Serve with Nginx.
 FROM nginx:1.25-alpine
 COPY --from=builder /app/build /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
