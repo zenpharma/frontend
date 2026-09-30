@@ -150,6 +150,42 @@ jobs:
         id: tag
         run: echo "image_tag=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
 
+      - name: Debug OIDC claims
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import json
+          import base64
+          import urllib.request
+
+          url = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"]
+          token = os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+
+          req = urllib.request.Request(
+              url + "&audience=sts.amazonaws.com",
+              headers={"Authorization": f"bearer {token}"}
+          )
+
+          response = urllib.request.urlopen(req)
+          oidc_token = json.load(response)["value"]
+
+          payload = oidc_token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+
+          print(json.dumps({
+              "iss": claims.get("iss"),
+              "sub": claims.get("sub"),
+              "aud": claims.get("aud"),
+              "ref": claims.get("ref"),
+              "repository": claims.get("repository"),
+              "repository_owner": claims.get("repository_owner"),
+              "job_workflow_ref": claims.get("job_workflow_ref")
+          }, indent=2))
+          PY
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v5
         with:
