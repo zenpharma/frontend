@@ -1,3 +1,4 @@
+
 name: Promote pharma-ui to QA
 
 # Triggered manually — picks up the image currently running in DEV and opens
@@ -14,7 +15,6 @@ env:
   GITOPS_REPO: ${{ vars.GITOPS_REPO }}
 
 jobs:
-
   promote:
     name: Open QA Promotion PR
     runs-on: ubuntu-latest
@@ -75,7 +75,7 @@ jobs:
           cd _gitops
           git checkout -b "$BRANCH"
           yq e ".image.tag = \"${IMAGE_TAG}\"" -i "envs/qa/values-pharma-ui.yaml"
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .
           if git diff --staged --quiet; then
