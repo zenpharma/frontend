@@ -1,14 +1,15 @@
-name: CI/CD — pharma-ui
 
-# Triggers on push to develop / release branches only.
-# PRs → lint, test, security run but no Docker build.
-# PROD promotion → promote-prod-pharma-ui.yml (workflow_dispatch)
+name: CI/CD - pharma-ui
 
 on:
   push:
-    branches: [develop, 'release/**']
+    branches:
+      - develop
+      - 'release/**'
   pull_request:
-    branches: [main, develop]
+    branches:
+      - main
+      - develop
   workflow_dispatch:
     inputs:
       ref:
@@ -28,7 +29,6 @@ env:
   GITOPS_REPO: ${{ vars.GITOPS_REPO }}
 
 jobs:
-  # ── 1. Lint ───────────────────────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -47,7 +47,6 @@ jobs:
       - name: ESLint
         run: ./node_modules/.bin/eslint src/ --ext .js,.jsx
 
-  # ── 2. Unit Tests with Coverage ──────────────────────────────────────────
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -76,7 +75,6 @@ jobs:
           path: coverage/
           retention-days: 3
 
-  # ── 3. Code Quality & Security (SonarCloud + npm audit) ──────────────────
   sonar:
     name: Code Quality & Security
     runs-on: ubuntu-latest
@@ -105,11 +103,10 @@ jobs:
             -Dsonar.test.inclusions=**/*.test.js,**/*.test.jsx
             -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
 
-      - name: npm audit (HIGH/CRITICAL — fail)
+      - name: npm audit (HIGH/CRITICAL - report only)
         run: npm audit --audit-level=high
         continue-on-error: true
 
-  # ── 4. Build React App ───────────────────────────────────────────────────
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -135,7 +132,6 @@ jobs:
           name: build-artifact
           path: build/
 
-  # ── 5. Docker Build, Trivy Scan & Push to ECR ────────────────────────────
   docker-build-push:
     name: Docker Build & Push
     runs-on: ubuntu-latest
@@ -166,7 +162,7 @@ jobs:
             -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.image_tag }} \
             -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest .
 
-      - name: Trivy — scan image for vulnerabilities
+      - name: Trivy - scan image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.image_tag }}
@@ -180,9 +176,8 @@ jobs:
           docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ steps.tag.outputs.image_tag }}
           docker push ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
 
-  # ── 6. Deploy — DEV (direct push to gitops) ──────────────────────────────
   deploy-dev:
-    name: Deploy — DEV
+    name: Deploy - DEV
     needs: docker-build-push
     runs-on: ubuntu-latest
     environment: dev
@@ -202,16 +197,16 @@ jobs:
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           chmod +x /usr/local/bin/yq
 
-      - name: Update image tag — DEV
+      - name: Update image tag - DEV
         env:
           IMAGE_TAG: ${{ needs.docker-build-push.outputs.image_tag }}
         run: |
           yq e ".image.tag = \"${IMAGE_TAG}\"" -i \
             "_gitops/envs/dev/values-pharma-ui.yaml"
           cd _gitops
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .
           git diff --staged --quiet && echo "Already up to date" && exit 0
-          git commit -m "ci(dev): update pharma-ui → ${IMAGE_TAG}"
+          git commit -m "ci(dev): update pharma-ui - ${IMAGE_TAG}"
           git push
